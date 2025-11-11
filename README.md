@@ -2,6 +2,8 @@
 
 一个基于魔搭社区 API 的批量文生图工具，拥有简洁的 Web 界面。支持为多个提示词批量生成图片，并可自定义生成数量、尺寸和模型。所有图片将自动下载到本地。
 
+<img width="1013" height="1081" alt="PixPin_2025-11-11_20-53-43" src="https://github.com/user-attachments/assets/91a1bc6b-b762-443b-a2eb-eb36445c19b4" />
+<img width="1083" height="313" alt="PixPin_2025-11-11_20-53-59" src="https://github.com/user-attachments/assets/5ca1e1ba-d02c-4b2a-86d0-d2d6ad1ec313" />
 
 
 ## ✨ 功能特性
@@ -31,16 +33,23 @@
 
 ### 1. 克隆项目
 
-bash
+'''bash
+
 git clone https://github.com/starttown/AI_Batch_Images_Gen.git
+
 cd AI_Batch_Images_Gen
+
+'''
 
 ### 2. 安装依赖
 
 项目依赖 `express`, `node-fetch` 和 `cors` 来运行代理服务器。
 
-bash
+'''bash
+
 npm install
+
+'''
 
 
 
@@ -48,8 +57,12 @@ npm install
 
 在项目根目录下运行以下命令启动代理服务：
 
-bash
+'''bash
+
 node proxy.js
+
+'''
+
 
 
 
@@ -70,7 +83,7 @@ Proxy server running on http://localhost:3000
     - 创建一个新的 Token，并复制它（`ms-*************`）。
 
 2.  **配置工具**：
-    - 在界面的 "设置 API Token" 区域输入您的 Token（无需 `ms-` 前缀，工具会自动添加）。
+    - 在界面的 "设置 API Token" 区域输入您的 Token。
     - 选择您想要使用的模型。
     - 在 "输入提示词" 文本框中，每行输入一个提示词。
     - （可选）设置图片尺寸和批量生成个数。
