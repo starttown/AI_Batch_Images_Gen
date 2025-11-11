@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>魔搭社区批量文生图工具（Node代理版）</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 40px auto; padding: 20px; background-color: #f9f9f9; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1, h2 { color: #333; }
+        textarea, input, select, button { width: 100%; padding: 10px; margin: 10px 0; border-radius: 4px; border: 1px solid #ddd; box-sizing: border-box; }
+        button { background-color: #007bff; color: white; border: none; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        .result { margin-top: 20px; }
+        .result img { max-width: 200px; margin: 5px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; transition: transform 0.2s; }
+        .result img:hover { transform: scale(1.05); }
+        .status { margin: 10px 0; padding: 10px; background-color: #eef; border-radius: 4px; }
+        .error { color: red; }
+        .success { color: green; }
+        .debug { font-family: monospace; background-color: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 4px; white-space: pre-wrap; word-break: break-all; }
+        .image-container { display: flex; flex-wrap: wrap; gap: 10px; }
+        .image-item { text-align: center; position: relative; }
+        .image-item img { max-width: 200px; border-radius: 4px; border: 1px solid #ddd; }
+        .image-item p { margin: 5px 0; font-size: 14px; color: #666; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8); }
+        .modal-content { margin: auto; display: block; width: 80%; max-width: 700px; margin-top: 50px; }
+        .close { position: absolute; top: 15px; right: 35px; color: #f1f1f1; font-size: 40px; font-weight: bold; cursor: pointer; }
+        .download-all-btn { margin-top: 20px; background-color: #28a745; }
+        .download-all-btn:hover { background-color: #218838; }
+        .download-indicator { position: absolute; top: 5px; right: 5px; background: rgba(0,0,0,0.5); color: white; padding: 2px 5px; border-radius: 3px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>魔搭社区批量文生图工具（Node代理版）</h1>
+        <p>使用魔搭社区（ModelScope）免费API，支持批量生成图片，每日免费额度2000次。</p>
+        <hr>
+        <h2>1. 设置 API Token</h2>
+        <input type="password" id="api_key" placeholder="请输入您的 ModelScope Access Token（可带 ms- 前缀）">
+        <p><small>获取Token：<a href="https://modelscope.cn/my/myaccesstoken" target="_blank">https://modelscope.cn/my/myaccesstoken</a></small></p>
+        <hr>
+        <h2>2. 选择模型</h2>
+        <select id="model">
+            <option value="black-forest-labs/FLUX.1-Krea-dev">FLUX.1-Krea-dev</option>
+        </select>
+        <hr>
+        <h2>3. 输入提示词（每行一个）</h2>
+        <textarea id="prompts" rows="10" placeholder="例如：&#10;一只橘猫在窗台上睡觉&#10;赛博朋克风格的街道夜景"></textarea>
+        <hr>
+        <h2>4. 高级参数（可选）</h2>
+        <p>尺寸（宽x高）：<input type="text" id="size" placeholder="1024x1024" value="1024x1024"></p>
+        <!-- 修复：移除max限制和提示文字 -->
+        <p>批量生成个数：<input type="number" id="batch_count" min="1" value="1" style="width: 100px; display: inline-block;">（每个提示词生成的图片数量）</p>
+        <hr>
+        <button onclick="startBatchGenerate()">开始批量生成</button>
+        <div id="status" class="status"></div>
+        <div id="debug" class="debug" style="display: none;"></div>
+        <div id="result" class="result">
+            <h2>生成结果</h2>
+            <div id="image-container" class="image-container"></div>
+            <button id="downloadAllBtn" class="download-all-btn" style="display: none;" onclick="downloadAllImages()">下载所有图片</button>
+        </div>
+    </div>
+
+    <!-- 图片预览模态框 -->
+    <div id="imageModal" class="modal">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <img class="modal-content" id="modalImage">
+    </div>
+
+    <script>
+    // 存储所有生成的图片信息
+    let allGeneratedImages = [];
+
+    async function startBatchGenerate() {
+        const apiKey = document.getElementById('api_key').value.trim();
+        const model = document.getElementById('model').value;
+        const promptsText = document.getElementById('prompts').value.trim();
+        let size = document.getElementById('size').value.trim();
+        const batchCount = parseInt(document.getElementById('batch_count').value) || 1;
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('image-container');
+        const debugEl = document.getElementById('debug');
+        const downloadAllBtn = document.getElementById('downloadAllBtn');
+
+        if (!apiKey || !promptsText) {
+            statusEl.innerHTML = '<span class="error">请填写API Token和提示词！</span>';
+            return;
+        }
+
+        // 移除了batchCount > 10的校验
+
+        // 重置状态
+        allGeneratedImages = [];
+        resultEl.innerHTML = '';
+        downloadAllBtn.style.display = 'none';
+
+        // 强制将尺寸格式中的 '*' 替换为 'x'
+        size = size.replace(/\*/g, 'x');
+
+        const prompts = promptsText.split('\n').map(p => p.trim()).filter(p => p);
+        statusEl.innerHTML = `开始批量生成，共${prompts.length}个提示词，每个生成${batchCount}张图片，请耐心等待...`;
+        debugEl.style.display = 'block';
+        debugEl.innerHTML = '';
+
+        const base_url = 'http://localhost:3000/proxy';
+        const headers = {
+            'Authorization': 'Bearer ' + (apiKey.startsWith('ms-') ? apiKey : 'ms-' + apiKey),
+            'Content-Type': 'application/json',
+            'X-ModelScope-Async-Mode': 'true'
+        };
+
+        let totalTasks = prompts.length * batchCount;
+        let completedTasks = 0;
+
+        for (const prompt of prompts) {
+            for (let i = 0; i < batchCount; i++) {
+                try {
+                    const batchPrompt = `${prompt} (第${i+1}/${batchCount}张)`;
+                    const payload = { model, prompt, size };
+                    const resp = await fetch(base_url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            url: 'https://api-inference.modelscope.cn/v1/images/generations',
+                            headers,
+                            body: payload
+                        })
+                    });
+                    const data = await resp.json();
+                    debugEl.innerHTML += `--- 新任务 [${completedTasks+1}/${totalTasks}] ---\n`;
+                    debugEl.innerHTML += '请求体：' + JSON.stringify(payload, null, 2) + '\n';
+                    debugEl.innerHTML += '响应：' + JSON.stringify(data, null, 2) + '\n\n';
+
+                    if (!resp.ok || data.task_id === undefined) {
+                        statusEl.innerHTML += '<br><span class="error">请求失败：' + JSON.stringify(data) + '</span>';
+                        completedTasks++;
+                        continue;
+                    }
+                    const taskId = data.task_id;
+                    statusEl.innerHTML = `<br>任务提交成功 [${completedTasks+1}/${totalTasks}]，ID：${taskId}，等待生成...`;
+                    await pollForResult(taskId, batchPrompt, headers, resultEl, statusEl, debugEl, i+1);
+                    completedTasks++;
+                } catch (e) {
+                    statusEl.innerHTML += '<br><span class="error">异常：' + e.message + '</span>';
+                    debugEl.innerHTML += '异常：' + e.message + '\n\n';
+                    completedTasks++;
+                }
+            }
+        }
+        
+        // 所有任务完成后，显示下载按钮
+        if (allGeneratedImages.length > 0) {
+            downloadAllBtn.style.display = 'block';
+        }
+        
+        statusEl.innerHTML += '<br><span class="success">批量生成完成！</span>';
+    }
+
+    async function pollForResult(taskId, prompt, headers, resultEl, statusEl, debugEl, batchIndex) {
+        const pollUrl = 'http://localhost:3000/proxy';
+        for (let i = 0; i < 60; i++) {
+            await new Promise(r => setTimeout(r, 5000));
+            const resp = await fetch(`${pollUrl}?url=${encodeURIComponent(`https://api-inference.modelscope.cn/v1/tasks/${taskId}`)}&authorization=${encodeURIComponent(headers.Authorization)}`, {
+                method: 'GET'
+            });
+            const data = await resp.json();
+            
+            debugEl.innerHTML = `正在处理，请稍候... [${i+1}/60]`;
+
+            if (data.task_status === 'SUCCEED') {
+                const urls = data.output_images;
+                statusEl.innerHTML += '<br><span class="success">生成成功：' + prompt + '</span>';
+                debugEl.innerHTML += '\n--- 最终结果 ---\n' + JSON.stringify(data, null, 2);
+                
+                urls.forEach((url, index) => {
+                    // 生成文件名，包含批次序号
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const safePrompt = prompt.substring(0, 20).replace(/[^\w\s]/gi, '').trim();
+                    const filename = `${safePrompt}_batch${batchIndex}_${timestamp}.png`;
+                    
+                    // 添加到全局数组
+                    allGeneratedImages.push({ url, filename, prompt });
+                    
+                    // 创建图片元素
+                    const imageItem = document.createElement('div');
+                    imageItem.className = 'image-item';
+                    
+                    const img = document.createElement('img');
+                    img.src = url;
+                    img.title = prompt;
+                    img.onclick = function() { openModal(url); };
+                    
+                    const p = document.createElement('p');
+                    p.textContent = prompt.length > 20 ? prompt.substring(0, 20) + '...' : prompt;
+                    
+                    // 添加下载指示器
+                    const downloadIndicator = document.createElement('div');
+                    downloadIndicator.className = 'download-indicator';
+                    downloadIndicator.textContent = '已下载';
+                    
+                    imageItem.appendChild(img);
+                    imageItem.appendChild(p);
+                    imageItem.appendChild(downloadIndicator);
+                    resultEl.appendChild(imageItem);
+                    
+                    // 自动下载图片
+                    downloadImage(url, filename);
+                });
+                return;
+            } else if (data.task_status === 'FAILED') {
+                statusEl.innerHTML += '<br><span class="error">生成失败：' + prompt + ' - ' + JSON.stringify(data) + '</span>';
+                debugEl.innerHTML += '\n--- 最终结果 ---\n' + JSON.stringify(data, null, 2);
+                return;
+            }
+        }
+        statusEl.innerHTML += '<br><span class="error">任务超时：' + prompt + '</span>';
+    }
+
+    // 下载单个图片
+    function downloadImage(url, filename) {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
+
+    // 下载所有图片
+    function downloadAllImages() {
+        if (allGeneratedImages.length === 0) {
+            alert('没有可下载的图片');
+            return;
+        }
+        
+        allGeneratedImages.forEach((image, index) => {
+            // 添加延迟，避免浏览器阻止多个下载
+            setTimeout(() => {
+                downloadImage(image.url, image.filename);
+            }, index * 500); // 每500ms下载一个
+        });
+    }
+
+    function openModal(src) {
+        document.getElementById('imageModal').style.display = 'block';
+        document.getElementById('modalImage').src = src;
+    }
+
+    function closeModal() {
+        document.getElementById('imageModal').style.display = 'none';
+    }
+
+    // 点击模态框外部关闭
+    window.onclick = function(event) {
+        const modal = document.getElementById('imageModal');
+        if (event.target == modal) {
+            modal.style.display = 'none';
+        }
+    }
+    </script>
+</body>
+</html>
