@@ -26,7 +26,9 @@
         .close { position: absolute; top: 15px; right: 35px; color: #f1f1f1; font-size: 40px; font-weight: bold; cursor: pointer; }
         .download-all-btn { margin-top: 20px; background-color: #28a745; }
         .download-all-btn:hover { background-color: #218838; }
-        .download-indicator { position: absolute; top: 5px; right: 5px; background: rgba(0,0,0,0.5); color: white; padding: 2px 5px; border-radius: 3px; font-size: 12px; }
+        .log-container { margin-top: 20px; max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background-color: #f9f9f9; border-radius: 4px; }
+        .copy-log-btn { margin-top: 10px; background-color: #17a2b8; }
+        .copy-log-btn:hover { background-color: #138496; }
     </style>
 </head>
 <body>
@@ -53,11 +55,16 @@
         <hr>
         <button onclick="startBatchGenerate()">开始批量生成</button>
         <div id="status" class="status"></div>
-        <div id="debug" class="debug" style="display: none;"></div>
         <div id="result" class="result">
             <h2>生成结果</h2>
             <div id="image-container" class="image-container"></div>
             <button id="downloadAllBtn" class="download-all-btn" style="display: none;" onclick="downloadAllImages()">下载所有图片</button>
+            
+            <h2 style="margin-top: 30px;">日志记录</h2>
+            <div id="logContainer" class="log-container" style="display: none;">
+                <pre id="logContent"></pre>
+            </div>
+            <button id="copyLogBtn" class="copy-log-btn" style="display: none;" onclick="copyLog()">复制日志到剪贴板</button>
         </div>
     </div>
 
@@ -70,6 +77,8 @@
     <script>
     // 存储所有生成的图片信息
     let allGeneratedImages = [];
+    // 存储日志信息
+    let logData = [];
 
     async function startBatchGenerate() {
         const apiKey = document.getElementById('api_key').value.trim();
@@ -79,28 +88,29 @@
         const batchCount = parseInt(document.getElementById('batch_count').value) || 1;
         const statusEl = document.getElementById('status');
         const resultEl = document.getElementById('image-container');
-        const debugEl = document.getElementById('debug');
         const downloadAllBtn = document.getElementById('downloadAllBtn');
+        const logContainer = document.getElementById('logContainer');
+        const logContent = document.getElementById('logContent');
+        const copyLogBtn = document.getElementById('copyLogBtn');
 
         if (!apiKey || !promptsText) {
             statusEl.innerHTML = '<span class="error">请填写API Token和提示词！</span>';
             return;
         }
 
-        // 移除了batchCount > 10的校验
-
         // 重置状态
         allGeneratedImages = [];
+        logData = [];
         resultEl.innerHTML = '';
         downloadAllBtn.style.display = 'none';
+        logContainer.style.display = 'none';
+        copyLogBtn.style.display = 'none';
 
         // 强制将尺寸格式中的 '*' 替换为 'x'
         size = size.replace(/\*/g, 'x');
 
         const prompts = promptsText.split('\n').map(p => p.trim()).filter(p => p);
         statusEl.innerHTML = `开始批量生成，共${prompts.length}个提示词，每个生成${batchCount}张图片，请耐心等待...`;
-        debugEl.style.display = 'block';
-        debugEl.innerHTML = '';
 
         const base_url = 'http://localhost:3000/proxy';
         const headers = {
@@ -112,11 +122,15 @@
         let totalTasks = prompts.length * batchCount;
         let completedTasks = 0;
 
+        // 严格串行处理：每个任务完全完成后再处理下一个
         for (const prompt of prompts) {
             for (let i = 0; i < batchCount; i++) {
                 try {
                     const batchPrompt = `${prompt} (第${i+1}/${batchCount}张)`;
                     const payload = { model, prompt, size };
+                    
+                    statusEl.innerHTML = `正在提交任务 [${completedTasks+1}/${totalTasks}]：${batchPrompt}`;
+                    
                     const resp = await fetch(base_url, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -126,23 +140,38 @@
                             body: payload
                         })
                     });
+                    
                     const data = await resp.json();
-                    debugEl.innerHTML += `--- 新任务 [${completedTasks+1}/${totalTasks}] ---\n`;
-                    debugEl.innerHTML += '请求体：' + JSON.stringify(payload, null, 2) + '\n';
-                    debugEl.innerHTML += '响应：' + JSON.stringify(data, null, 2) + '\n\n';
+                    
+                    // 记录日志
+                    logData.push(`--- 新任务 [${completedTasks+1}/${totalTasks}] ---`);
+                    logData.push('请求体：' + JSON.stringify(payload, null, 2));
+                    logData.push('响应：' + JSON.stringify(data, null, 2));
+                    logData.push('');
 
                     if (!resp.ok || data.task_id === undefined) {
-                        statusEl.innerHTML += '<br><span class="error">请求失败：' + JSON.stringify(data) + '</span>';
+                        statusEl.innerHTML = '<span class="error">请求失败：' + JSON.stringify(data) + '</span>';
                         completedTasks++;
                         continue;
                     }
+                    
                     const taskId = data.task_id;
-                    statusEl.innerHTML = `<br>任务提交成功 [${completedTasks+1}/${totalTasks}]，ID：${taskId}，等待生成...`;
-                    await pollForResult(taskId, batchPrompt, headers, resultEl, statusEl, debugEl, i+1);
+                    statusEl.innerHTML = `任务提交成功 [${completedTasks+1}/${totalTasks}]，ID：${taskId}，等待生成...`;
+                    
+                    // 等待当前任务完全完成后再继续下一个
+                    const taskSuccess = await pollForResult(taskId, batchPrompt, headers, resultEl, statusEl, i+1);
+                    
                     completedTasks++;
+                    
+                    // 每个任务完成后增加延迟，避免频率限制
+                    if (taskSuccess && completedTasks < totalTasks) {
+                        statusEl.innerHTML = '等待3秒后提交下一个任务...';
+                        await new Promise(r => setTimeout(r, 3000));
+                    }
                 } catch (e) {
-                    statusEl.innerHTML += '<br><span class="error">异常：' + e.message + '</span>';
-                    debugEl.innerHTML += '异常：' + e.message + '\n\n';
+                    statusEl.innerHTML = '<span class="error">异常：' + e.message + '</span>';
+                    logData.push('异常：' + e.message);
+                    logData.push('');
                     completedTasks++;
                 }
             }
@@ -153,24 +182,62 @@
             downloadAllBtn.style.display = 'block';
         }
         
-        statusEl.innerHTML += '<br><span class="success">批量生成完成！</span>';
+        // 保存日志到localStorage并显示
+        if (logData.length > 0) {
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const logKey = `modelscope_log_${timestamp}`;
+            const logContentStr = logData.join('\n');
+            
+            // 保存到localStorage
+            localStorage.setItem(logKey, logContentStr);
+            
+            // 保存日志键到历史记录
+            let logHistory = JSON.parse(localStorage.getItem('modelscope_log_history') || '[]');
+            logHistory.unshift(logKey);
+            // 只保留最近10条日志
+            if (logHistory.length > 10) {
+                logHistory = logHistory.slice(0, 10);
+            }
+            localStorage.setItem('modelscope_log_history', JSON.stringify(logHistory));
+            
+            // 显示日志
+            logContent.textContent = logContentStr;
+            logContainer.style.display = 'block';
+            copyLogBtn.style.display = 'block';
+            
+            console.log('日志已保存到localStorage，键名：', logKey);
+        }
+        
+        statusEl.innerHTML = '<span class="success">批量生成完成！</span>';
     }
 
-    async function pollForResult(taskId, prompt, headers, resultEl, statusEl, debugEl, batchIndex) {
+    async function pollForResult(taskId, prompt, headers, resultEl, statusEl, batchIndex) {
         const pollUrl = 'http://localhost:3000/proxy';
-        for (let i = 0; i < 60; i++) {
+        
+        // 增加轮询超时时间：从60次增加到120次（总时长10分钟）
+        for (let i = 0; i < 120; i++) {
             await new Promise(r => setTimeout(r, 5000));
+            
             const resp = await fetch(`${pollUrl}?url=${encodeURIComponent(`https://api-inference.modelscope.cn/v1/tasks/${taskId}`)}&authorization=${encodeURIComponent(headers.Authorization)}`, {
                 method: 'GET'
             });
+            
             const data = await resp.json();
             
-            debugEl.innerHTML = `正在处理，请稍候... [${i+1}/60]`;
+            // 只在状态栏显示当前轮询进度
+            statusEl.innerHTML = `正在处理任务 [${batchIndex}]，轮询 ${i+1}/120`;
+            
+            // 记录轮询日志（但不打印到界面）
+            logData.push(`轮询 ${i+1}/120：${JSON.stringify(data, null, 2)}`);
 
             if (data.task_status === 'SUCCEED') {
                 const urls = data.output_images;
-                statusEl.innerHTML += '<br><span class="success">生成成功：' + prompt + '</span>';
-                debugEl.innerHTML += '\n--- 最终结果 ---\n' + JSON.stringify(data, null, 2);
+                statusEl.innerHTML = '<span class="success">生成成功：' + prompt + '</span>';
+                
+                // 记录最终结果
+                logData.push('\n--- 最终结果 ---');
+                logData.push(JSON.stringify(data, null, 2));
+                logData.push('');
                 
                 urls.forEach((url, index) => {
                     // 生成文件名，包含批次序号
@@ -206,14 +273,20 @@
                     // 自动下载图片
                     downloadImage(url, filename);
                 });
-                return;
+                return true; // 返回成功状态
             } else if (data.task_status === 'FAILED') {
-                statusEl.innerHTML += '<br><span class="error">生成失败：' + prompt + ' - ' + JSON.stringify(data) + '</span>';
-                debugEl.innerHTML += '\n--- 最终结果 ---\n' + JSON.stringify(data, null, 2);
-                return;
+                statusEl.innerHTML = '<span class="error">生成失败：' + prompt + ' - ' + JSON.stringify(data) + '</span>';
+                
+                // 记录失败结果
+                logData.push('\n--- 最终结果 ---');
+                logData.push(JSON.stringify(data, null, 2));
+                logData.push('');
+                
+                return false; // 返回失败状态
             }
         }
-        statusEl.innerHTML += '<br><span class="error">任务超时：' + prompt + '</span>';
+        statusEl.innerHTML = '<span class="error">任务超时：' + prompt + '</span>';
+        return false; // 返回超时状态
     }
 
     // 下载单个图片
@@ -241,6 +314,17 @@
         });
     }
 
+    // 复制日志到剪贴板
+    function copyLog() {
+        const logContent = document.getElementById('logContent').textContent;
+        navigator.clipboard.writeText(logContent).then(() => {
+            alert('日志已复制到剪贴板！');
+        }).catch(err => {
+            console.error('复制失败：', err);
+            alert('复制失败，请手动选择文本复制');
+        });
+    }
+
     function openModal(src) {
         document.getElementById('imageModal').style.display = 'block';
         document.getElementById('modalImage').src = src;
@@ -251,6 +335,15 @@
     }
 
     // 点击模态框外部关闭
+    window.onload = function() {
+        // 页面加载时检查是否有历史日志
+        const logHistory = JSON.parse(localStorage.getItem('modelscope_log_history') || '[]');
+        if (logHistory.length > 0) {
+            console.log('历史日志记录：', logHistory);
+            console.log('查看日志方法：在控制台输入 localStorage.getItem("modelscope_log_2025-01-01T00-00-00-000Z")');
+        }
+    };
+    
     window.onclick = function(event) {
         const modal = document.getElementById('imageModal');
         if (event.target == modal) {
